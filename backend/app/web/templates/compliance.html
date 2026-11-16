@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compliance Dashboard -- POC Security Assessment Workflow</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="app-header" id="app-header"></header>
+<main class="app-main">
+  <div class="card">
+    <h2>Audit Chain Integrity</h2>
+    <p class="notice">D5-Approval-Audit.md section 5.4: recomputes the SHA-256 hash chain from genesis and reports the exact first broken entry, if any. Hash chaining is tamper-EVIDENT against the application layer, not tamper-PROOF against host-level access -- see architecture/TASD-v1.0.md section 18.10.</p>
+    <button onclick="verifyChain()">Verify chain now</button>
+    <div id="verify-result"></div>
+    <div id="verify-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card">
+    <h2>All Assessments</h2>
+    <button class="secondary" onclick="loadAssessments()">Refresh</button>
+    <table>
+      <thead><tr><th>Status</th><th>Recommendation</th><th>Input version</th><th>Created</th><th></th></tr></thead>
+      <tbody id="assessments-body"></tbody>
+    </table>
+    <div id="assessments-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card">
+    <h2>Audit Trail</h2>
+    <div class="field-row">
+      <label>Filter by affected_object_id (optional) <input id="filter-object-id" placeholder="e.g. a poc_request id"></label>
+    </div>
+    <button class="secondary" onclick="loadAuditEntries()">Load entries</button>
+    <table>
+      <thead><tr><th>#</th><th>Action</th><th>Actor kind</th><th>Object type</th><th>Object id</th><th>Recorded at</th></tr></thead>
+      <tbody id="audit-body"></tbody>
+    </table>
+    <div id="audit-error" class="error-box hidden"></div>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+if (APP.requireAuth()) {
+  if (!["ComplianceAuditor", "PlatformOwner"].includes(APP.getRole())) {
+    window.location.href = APP.homeForRole(APP.getRole());
+  }
+  APP.renderHeader("/compliance");
+  verifyChain();
+  loadAssessments();
+  loadAuditEntries();
+}
+
+async function verifyChain() {
+  APP.clearError("verify-error");
+  try {
+    const result = await APP.api("/api/audit-entries/verify");
+    document.getElementById("verify-result").innerHTML = result.ok
+      ? `<p>${APP.pill("OK", "ok")} Chain verifies cleanly across ${result.entries_checked} entries.</p>`
+      : `<p>${APP.pill("BROKEN", "broken")} First broken entry: sequence ${result.first_broken_sequence_number}.</p>`;
+  } catch (e) { APP.showError("verify-error", e); }
+}
+
+async function loadAssessments() {
+  APP.clearError("assessments-error");
+  try {
+    const items = await APP.api("/api/poc-requests/queue");
+    const summaries = await Promise.all(items.map(async (p) => {
+      try { return await APP.api(`/api/poc-requests/${p.id}/summary`); } catch { return null; }
+    }));
+    document.getElementById("assessments-body").innerHTML = items.map((p, i) => {
+      const rec = summaries[i] && summaries[i].recommendation;
+      return `<tr>
+        <td>${APP.pill(p.status)}</td>
+        <td>${rec ? APP.pill(rec.outcome, APP.outcomePillClass(rec.outcome)) : "-"}</td>
+        <td>${p.current_input_version}</td>
+        <td>${new Date(p.created_at).toLocaleString()}</td>
+        <td><a class="btn secondary" href="/assessment?id=${p.id}">View</a></td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="5" class="notice">No assessments yet.</td></tr>`;
+  } catch (e) { APP.showError("assessments-error", e); }
+}
+
+async function loadAuditEntries() {
+  APP.clearError("audit-error");
+  try {
+    const filter = document.getElementById("filter-object-id").value;
+    const qs = filter ? `?affected_object_id=${encodeURIComponent(filter)}` : "";
+    const entries = await APP.api(`/api/audit-entries${qs}`);
+    document.getElementById("audit-body").innerHTML = entries.map((e) => `
+      <tr>
+        <td>${e.sequence_number}</td>
+        <td>${e.action_type}</td>
+        <td>${APP.pill(e.actor_kind, "neutral")}</td>
+        <td>${e.affected_object_type}</td>
+        <td><code style="font-size:0.75rem;">${e.affected_object_id.slice(0, 12)}</code></td>
+        <td>${new Date(e.recorded_at).toLocaleString()}</td>
+      </tr>`).join("") || `<tr><td colspan="6" class="notice">No audit entries.</td></tr>`;
+  } catch (e) { APP.showError("audit-error", e); }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Requester Portal -- POC Security Assessment Workflow</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="app-header" id="app-header"></header>
+<main class="app-main">
+  <div class="card">
+    <h2>Submit a new POC scope</h2>
+    <p class="notice">BR-001: no pre-existing security documentation is required.</p>
+    <label>Project description <textarea id="scope-description" rows="3" placeholder="What are you trying to test, and why?"></textarea></label>
+    <label>Systems in scope <textarea id="scope-systems" rows="2" placeholder="Hostnames, environments, integrations"></textarea></label>
+    <label>Business justification <textarea id="scope-justification" rows="2"></textarea></label>
+    <button onclick="submitScope()">Submit scope</button>
+    <div id="scope-error" class="error-box hidden"></div>
+    <div id="scope-success" class="success-box hidden"></div>
+  </div>
+
+  <div class="card">
+    <h2>My assessments</h2>
+    <button class="secondary" onclick="loadMine()">Refresh</button>
+    <table id="mine-table">
+      <thead><tr><th>Status</th><th>Input version</th><th>Created</th><th></th></tr></thead>
+      <tbody id="mine-body"></tbody>
+    </table>
+    <div id="mine-error" class="error-box hidden"></div>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+if (APP.requireAuth()) {
+  if (APP.getRole() !== "Requester") { window.location.href = APP.homeForRole(APP.getRole()); }
+  APP.renderHeader("/requester");
+  loadMine();
+}
+
+async function submitScope() {
+  APP.clearError("scope-error");
+  try {
+    const scope = await APP.api("/api/poc-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_description: document.getElementById("scope-description").value,
+        systems_in_scope: document.getElementById("scope-systems").value,
+        business_justification: document.getElementById("scope-justification").value,
+        intake_form_data: {},
+      }),
+    });
+    APP.showSuccess("scope-success", `Scope submitted (version ${scope.version}). Opening assessment workspace...`);
+    setTimeout(() => { window.location.href = `/assessment?id=${scope.poc_request_id}`; }, 700);
+  } catch (e) { APP.showError("scope-error", e); }
+}
+
+async function loadMine() {
+  APP.clearError("mine-error");
+  try {
+    const mine = await APP.api("/api/poc-requests");
+    const body = document.getElementById("mine-body");
+    body.innerHTML = mine.map((p) => `
+      <tr>
+        <td>${APP.pill(p.status)}</td>
+        <td>${p.current_input_version}</td>
+        <td>${new Date(p.created_at).toLocaleString()}</td>
+        <td><a class="btn secondary" href="/assessment?id=${p.id}">Open</a></td>
+      </tr>`).join("") || `<tr><td colspan="4" class="notice">No assessments yet.</td></tr>`;
+  } catch (e) { APP.showError("mine-error", e); }
+}
+</script>
+</body>
+</html>

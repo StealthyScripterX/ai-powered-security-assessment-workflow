@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assessment Queue -- POC Security Assessment Workflow</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="app-header" id="app-header"></header>
+<main class="app-main">
+  <div class="card">
+    <h2 id="queue-title">Assessment Queue</h2>
+    <p class="notice" id="queue-role-notice"></p>
+    <button class="secondary" onclick="loadQueue()">Refresh</button>
+    <table>
+      <thead><tr><th>Status</th><th>Recommendation</th><th>Sign-off</th><th>Input version</th><th>Created</th><th></th></tr></thead>
+      <tbody id="queue-body"></tbody>
+    </table>
+    <div id="queue-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="admin-card">
+    <h2>Publish Policy Config (Platform Owner)</h2>
+    <p class="notice">This is where the organization's real OD-01/OD-10/OD-15/OD-16 answers get entered. Nothing below is pre-filled with a default -- leave a field blank to keep that Open Decision unresolved.</p>
+    <div class="field-row">
+      <label>Layer 1 completeness threshold (OD-10, 0-1) <input id="pc-l1" placeholder="e.g. 0.3"></label>
+    </div>
+    <label>Layer 3 weights JSON (OD-15) <textarea id="pc-l3w" rows="2">{"f1_pending_review_discount": 0.5, "overall_multiplier": 1.0}</textarea></label>
+    <label>Layer 3 thresholds JSON (OD-16) <textarea id="pc-l3t" rows="2">{"low_max": 33, "medium_max": 66}</textarea></label>
+    <button onclick="publishPolicy()">Publish</button>
+    <div id="policy-error" class="error-box hidden"></div>
+    <div id="policy-success" class="success-box hidden"></div>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+if (APP.requireAuth()) {
+  APP.renderHeader("/queue");
+  const role = APP.getRole();
+  const titles = {
+    SecurityReviewer: "Security Reviewer Dashboard -- Assessment Queue",
+    EnvironmentOwner: "Environment Owner Dashboard -- Assessment Queue",
+    FinalApprover: "Approver Dashboard -- Assessment Queue",
+    PlatformOwner: "Platform Owner -- All Assessments",
+  };
+  document.getElementById("queue-title").textContent = titles[role] || "Assessment Queue";
+  document.getElementById("queue-role-notice").textContent =
+    "Click any assessment to open its full workspace (scope, AI analysis, questionnaire, mapping, evidence, environment readiness, recommendation, approval).";
+  if (role !== "PlatformOwner") document.getElementById("admin-card").classList.add("hidden");
+  loadQueue();
+}
+
+async function loadQueue() {
+  APP.clearError("queue-error");
+  try {
+    const items = await APP.api("/api/poc-requests/queue");
+    const summaries = await Promise.all(items.map(async (p) => {
+      try { return await APP.api(`/api/poc-requests/${p.id}/summary`); }
+      catch { return null; }
+    }));
+    const body = document.getElementById("queue-body");
+    body.innerHTML = items.map((p, i) => {
+      const s = summaries[i];
+      const rec = s && s.recommendation;
+      return `
+      <tr>
+        <td>${APP.pill(p.status)}</td>
+        <td>${rec ? APP.pill(rec.outcome, APP.outcomePillClass(rec.outcome)) : '<span class="notice">not yet computed</span>'}</td>
+        <td>${s ? APP.pill(s.final_signoff_boolean ? "Complete" : "Incomplete", s.final_signoff_boolean ? "ok" : "notstarted") : "-"}</td>
+        <td>${p.current_input_version}</td>
+        <td>${new Date(p.created_at).toLocaleString()}</td>
+        <td><a class="btn secondary" href="/assessment?id=${p.id}">Open</a></td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="6" class="notice">No assessments yet.</td></tr>`;
+  } catch (e) { APP.showError("queue-error", e); }
+}
+
+async function publishPolicy() {
+  APP.clearError("policy-error");
+  try {
+    const l1 = document.getElementById("pc-l1").value;
+    const payload = {
+      layer1_completeness_threshold: l1 ? parseFloat(l1) : null,
+      layer2_policy_hooks: [],
+      layer3_weights: JSON.parse(document.getElementById("pc-l3w").value || "null"),
+      layer3_thresholds: JSON.parse(document.getElementById("pc-l3t").value || "null"),
+    };
+    const result = await APP.api("/api/admin/policy-config", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    APP.showSuccess("policy-success", `Published policy config version ${result.version}.`);
+  } catch (e) { APP.showError("policy-error", e); }
+}
+</script>
+</body>
+</html>

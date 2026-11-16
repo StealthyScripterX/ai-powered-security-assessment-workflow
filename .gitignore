@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+backend/.env
+backend/*.db
+backend/poc_security_assessment.egg-info/
+backend/.pytest_cache/
+.pytest_cache/
+backend/var/

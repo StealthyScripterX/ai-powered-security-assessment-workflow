@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in -- POC Security Assessment Workflow</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="app-header" id="app-header"></header>
+<main class="app-main" style="max-width:480px;">
+  <div class="card">
+    <h2>Sign in</h2>
+    <label>Username <input id="username" autocomplete="username"></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password"></label>
+    <button onclick="login()">Sign in</button>
+    <div id="login-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card">
+    <h2>Create an account</h2>
+    <p class="notice">BR-001: no pre-existing security documentation is required to use this platform.</p>
+    <label>Username <input id="reg-username"></label>
+    <label>Email <input id="reg-email" type="email"></label>
+    <label>Password <input id="reg-password" type="password"></label>
+    <label>Role <select id="reg-role">
+      <option value="Requester">Requester</option>
+      <option value="SecurityReviewer">Security Reviewer</option>
+      <option value="EnvironmentOwner">Environment Owner</option>
+      <option value="FinalApprover">Final Approver</option>
+      <option value="ComplianceAuditor">Compliance Auditor</option>
+      <option value="PlatformOwner">Platform Owner</option>
+    </select></label>
+    <p class="notice">Role assignment is a stand-in for the organization's own identity/IdP group-mapping process (OD-06/OD-07 are not resolved by this choice -- see architecture/OPEN-DECISIONS.md).</p>
+    <button class="secondary" onclick="register()">Register</button>
+    <div id="register-error" class="error-box hidden"></div>
+    <div id="register-success" class="success-box hidden"></div>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+APP.renderHeader("/login");
+
+async function login() {
+  APP.clearError("login-error");
+  try {
+    const form = new URLSearchParams();
+    form.set("username", document.getElementById("username").value);
+    form.set("password", document.getElementById("password").value);
+    const data = await APP.api("/api/auth/login", { method: "POST", body: form });
+    APP.saveSession(data.access_token);
+    APP.setUsername(document.getElementById("username").value);
+    window.location.href = APP.homeForRole(APP.getRole());
+  } catch (e) { APP.showError("login-error", e); }
+}
+
+async function register() {
+  APP.clearError("register-error");
+  try {
+    await APP.api("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("reg-username").value,
+        email: document.getElementById("reg-email").value,
+        password: document.getElementById("reg-password").value,
+        role: document.getElementById("reg-role").value,
+      }),
+    });
+    APP.showSuccess("register-success", "Account created. Sign in above.");
+    document.getElementById("username").value = document.getElementById("reg-username").value;
+  } catch (e) { APP.showError("register-error", e); }
+}
+</script>
+</body>
+</html>

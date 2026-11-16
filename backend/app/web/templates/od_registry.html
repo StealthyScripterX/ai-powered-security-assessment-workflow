@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organizational Decisions -- POC Security Assessment Workflow</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="app-header" id="app-header"></header>
+<main class="app-main">
+  <div class="card">
+    <h2>Organizational Decision Registry</h2>
+    <p class="notice">
+      These six decisions are the project's blocking Open Decisions (docs/baseline/README.md). This platform never
+      invents or auto-approves a value for any of them -- every row below starts <strong>Open</strong> and only
+      moves to Proposed, then Approved/Rejected, through an explicit, rationale-bearing action by a Platform Owner.
+      Dependent functionality (Layer 1 Rule 3, the entire Layer 3 risk engine) stays unconfigured and fails
+      closed until the corresponding decision is both Approved <em>and</em> Activated.
+    </p>
+  </div>
+  <div id="od-list"></div>
+  <div id="od-error" class="error-box hidden"></div>
+</main>
+
+<script src="/static/app.js"></script>
+<script>
+if (APP.requireAuth()) {
+  if (APP.getRole() !== "PlatformOwner") { window.location.href = APP.homeForRole(APP.getRole()); }
+  APP.renderHeader("/od-registry");
+  loadRegistry();
+}
+
+const ACTIVATABLE = new Set(["OD-10", "OD-15", "OD-16"]);
+
+function statusPillClass(status) {
+  if (status === "Approved") return "ok";
+  if (status === "Rejected") return "broken";
+  if (status === "Proposed") return "pending";
+  return "neutral";
+}
+
+async function loadRegistry() {
+  APP.clearError("od-error");
+  try {
+    const decisions = await APP.api("/api/organizational-decisions");
+    const container = document.getElementById("od-list");
+    container.innerHTML = "";
+    for (const od of decisions) {
+      const history = await APP.api(`/api/organizational-decisions/${od.id}/history`);
+      container.appendChild(renderCard(od, history));
+    }
+  } catch (e) { APP.showError("od-error", e); }
+}
+
+function renderCard(od, history) {
+  const div = document.createElement("div");
+  div.className = "card";
+
+  const optionsHtml = (od.proposed_options || []).map((o) => `
+    <div style="border:1px solid #eee; border-radius:6px; padding:0.5rem; margin-top:0.4rem;">
+      <strong>${o.label}</strong> -- ${o.description}
+      <div class="notice">${o.implications || ""}</div>
+    </div>`).join("");
+
+  const historyHtml = history.length
+    ? `<table><thead><tr><th>Action</th><th>Value</th><th>Rationale</th><th>Actor</th><th>When</th></tr></thead><tbody>${
+        history.map((h) => `<tr>
+          <td>${APP.pill(h.action, h.action === "Approved" ? "ok" : h.action === "Rejected" ? "broken" : "neutral")}</td>
+          <td><code style="font-size:0.75rem;">${h.value ? JSON.stringify(h.value) : "-"}</code></td>
+          <td>${h.rationale}</td>
+          <td>${h.actor_role}</td>
+          <td>${new Date(h.created_at).toLocaleString()}</td>
+        </tr>`).join("")
+      }</tbody></table>`
+    : '<p class="notice">No history yet -- this decision is Open.</p>';
+
+  const canPropose = od.current_status === "Open" || od.current_status === "Rejected";
+  const canDecide = od.current_status === "Proposed";
+  const canActivate = od.current_status === "Approved" && ACTIVATABLE.has(od.id);
+  const canRevise = od.current_status === "Approved" || od.current_status === "Rejected";
+
+  div.innerHTML = `
+    <h2>${od.id}: ${od.title} ${APP.pill(od.current_status, statusPillClass(od.current_status))} ${od.is_blocking ? '<span class="pill broken">BLOCKING</span>' : ""}</h2>
+    <p><strong>Purpose:</strong> ${od.purpose}</p>
+    <p><strong>Impact:</strong> ${od.impact}</p>
+    <h3>Proposed options (offered, never auto-selected)</h3>
+    ${optionsHtml}
+    <h3>Decision history (immutable)</h3>
+    ${historyHtml}
+    <div class="action-area" style="margin-top:0.75rem;"></div>
+  `;
+
+  const actionArea = div.querySelector(".action-area");
+  if (canPropose) {
+    actionArea.innerHTML = `<button onclick="doPropose('${od.id}')">Propose a value</button>`;
+  } else if (canDecide) {
+    actionArea.innerHTML = `
+      <button onclick="doApprove('${od.id}')">Approve</button>
+      <button class="secondary" onclick="doReject('${od.id}')">Reject</button>`;
+  }
+  if (canActivate) {
+    actionArea.innerHTML += ` <button onclick="doActivate('${od.id}')">Activate into Policy Config</button>`;
+  }
+  if (canRevise) {
+    actionArea.innerHTML += ` <button class="secondary" onclick="doPropose('${od.id}', true)">Revise</button>`;
+  }
+  return div;
+}
+
+async function doPropose(odId, isRevise) {
+  APP.clearError("od-error");
+  const rationale = prompt("Rationale for this proposal (required):");
+  if (!rationale) return;
+  const valueRaw = prompt("Proposed value as JSON (e.g. {\"layer1_completeness_threshold\": 0.3}):");
+  if (!valueRaw) return;
+  try {
+    const value = JSON.parse(valueRaw);
+    const path = isRevise ? "revise" : "propose";
+    await APP.api(`/api/organizational-decisions/${odId}/${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value, rationale }),
+    });
+    await loadRegistry();
+  } catch (e) { APP.showError("od-error", e); }
+}
+
+async function doApprove(odId) {
+  APP.clearError("od-error");
+  const rationale = prompt("Rationale for APPROVING this decision (required):");
+  if (!rationale) return;
+  try {
+    await APP.api(`/api/organizational-decisions/${odId}/approve`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rationale }),
+    });
+    await loadRegistry();
+  } catch (e) { APP.showError("od-error", e); }
+}
+
+async function doReject(odId) {
+  APP.clearError("od-error");
+  const rationale = prompt("Rationale for REJECTING this decision (required):");
+  if (!rationale) return;
+  try {
+    await APP.api(`/api/organizational-decisions/${odId}/reject`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rationale }),
+    });
+    await loadRegistry();
+  } catch (e) { APP.showError("od-error", e); }
+}
+
+async function doActivate(odId) {
+  APP.clearError("od-error");
+  if (!confirm(`Activate ${odId}'s approved value into the live Policy Config? This affects the Decision Engine immediately.`)) return;
+  try {
+    await APP.api(`/api/organizational-decisions/${odId}/activate`, { method: "POST" });
+    await loadRegistry();
+  } catch (e) { APP.showError("od-error", e); }
+}
+</script>
+</body>
+</html>

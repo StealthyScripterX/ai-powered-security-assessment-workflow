@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assessment Workspace -- POC Security Assessment Workflow</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="app-header" id="app-header"></header>
+<main class="app-main">
+
+  <div class="card">
+    <h2>Assessment <span id="poc-id-label" class="notice"></span></h2>
+    <div class="progress-steps" id="progress-steps"></div>
+    <div id="top-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="scope-card">
+    <h2>Scope</h2>
+    <div id="scope-content"></div>
+  </div>
+
+  <div class="card" id="ai-analysis-card">
+    <h2>AI Scope Analysis <span class="provenance-badge">AI_ASSUMPTION / MISSING_EVIDENCE</span></h2>
+    <p class="notice">Drafted by the AI agent; a human reviewer should treat this alongside the raw scope text, never instead of it.</p>
+    <button onclick="generateQuestionnaire()">Analyze scope &amp; generate questions</button>
+    <div id="ai-gaps"></div>
+    <div id="ai-assumptions"></div>
+    <div id="questionnaire-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="questionnaire-card">
+    <h2>Questionnaire</h2>
+    <div id="questions"></div>
+    <button id="submit-answers-btn" class="hidden" onclick="submitAnswers()">Submit answers</button>
+    <div id="answers-error" class="error-box hidden"></div>
+    <div id="answers-success" class="success-box hidden"></div>
+  </div>
+
+  <div class="card" id="mapping-card">
+    <h2>Control Mapping <span class="notice">(ISO/IEC 27001:2022 &amp; NIST SP 800-53 Rev. 5 -- catalog-constrained, UNVERIFIED pending GRC review)</span></h2>
+    <button onclick="generateMappings()">Generate mappings from answers</button>
+    <table>
+      <thead><tr><th>Control</th><th>Confidence</th><th>Provenance</th><th>Review status</th><th>Rationale</th><th id="mapping-actions-header">Actions</th></tr></thead>
+      <tbody id="mapping-body"></tbody>
+    </table>
+    <div id="mapping-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="evidence-card">
+    <h2>Evidence</h2>
+    <div class="field-row">
+      <label>Control ID <input id="ev-control-id" placeholder="e.g. AC-2"></label>
+      <label>File <input id="ev-file" type="file"></label>
+    </div>
+    <button onclick="uploadEvidence()">Upload evidence</button>
+    <table>
+      <thead><tr><th>Control</th><th>State</th><th>Validated by</th><th id="evidence-actions-header">Actions</th></tr></thead>
+      <tbody id="evidence-body"></tbody>
+    </table>
+    <div id="evidence-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="environment-card">
+    <h2>Environment Readiness <span class="notice">(7 dimensions)</span></h2>
+    <div id="env-dimensions"></div>
+    <p id="signoff-status" class="notice"></p>
+    <div id="environment-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="engine-card">
+    <h2>Decision Engine / Recommendation</h2>
+    <button onclick="recompute()">Run engine</button>
+    <div id="recommendation"></div>
+    <div id="engine-error" class="error-box hidden"></div>
+  </div>
+
+  <div class="card" id="approval-card">
+    <h2>Human Approval</h2>
+    <label>Decision <select id="decision-type"><option>Approved</option><option>Rejected</option><option>MoreInfoRequested</option></select></label>
+    <label>Rationale <textarea id="decision-rationale" rows="2"></textarea></label>
+    <label>Disagreement rationale (only required if your decision differs from the AI recommendation) <textarea id="disagreement-rationale" rows="2"></textarea></label>
+    <button onclick="decide()">Submit decision</button>
+    <div id="approval-result"></div>
+    <div id="approval-error" class="error-box hidden"></div>
+  </div>
+
+</main>
+<script src="/static/app.js"></script>
+<script>
+if (!APP.requireAuth()) { /* redirected */ }
+APP.renderHeader("");
+
+const pocId = new URLSearchParams(window.location.search).get("id");
+if (!pocId) { document.getElementById("top-error").textContent = "No assessment id in URL."; document.getElementById("top-error").classList.remove("hidden"); }
+
+const ROLE = APP.getRole();
+const DIMENSIONS = ["Isolation", "AccessControl", "TestData", "ConfigBaseline", "Logging", "BackupRollback", "Decommissioning"];
+
+function sectionVisibility() {
+  // Show/hide action controls (never whole-section data) by role -- the
+  // server re-enforces every one of these regardless of what is shown.
+  document.getElementById("mapping-actions-header").style.display = ROLE === "SecurityReviewer" ? "" : "none";
+  document.getElementById("evidence-actions-header").style.display = ROLE === "SecurityReviewer" ? "" : "none";
+  if (!["EnvironmentOwner", "SecurityReviewer", "FinalApprover"].includes(ROLE)) {
+    document.getElementById("environment-card").querySelectorAll("button").forEach((b) => b.classList.add("hidden"));
+  }
+  if (ROLE !== "FinalApprover") document.getElementById("approval-card").classList.add("hidden");
+  if (ROLE === "ComplianceAuditor") {
+    // Read-only everywhere.
+    document.querySelectorAll("#app-main button, main button").forEach((b) => {
+      if (!["Refresh"].includes(b.textContent.trim())) b.classList.add("hidden");
+    });
+  }
+}
+sectionVisibility();
+
+async function loadAll() {
+  APP.clearError("top-error");
+  try {
+    const summary = await APP.api(`/api/poc-requests/${pocId}/summary`);
+    document.getElementById("poc-id-label").textContent = `#${pocId.slice(0, 8)} -- ${summary.status}`;
+    renderProgress(summary);
+    renderScope(summary.scope);
+    renderQuestions(summary.questions, summary.answers);
+    renderMappings(summary.mappings);
+    renderEvidence(summary.evidence_states);
+    renderEnvironment(summary.environment_attestations, summary.final_signoff_boolean);
+    if (summary.recommendation) renderRecommendation(summary.recommendation);
+  } catch (e) { APP.showError("top-error", e); }
+}
+
+function renderProgress(summary) {
+  const steps = [
+    { label: "Scope", done: !!summary.scope },
+    { label: "Questions", done: summary.questions.length > 0 },
+    { label: "Answers", done: summary.answers.length > 0 },
+    { label: "Mapping", done: summary.mappings.length > 0 },
+    { label: "Evidence", done: summary.evidence_states.some((s) => s.state !== "Not Provided") },
+    { label: "Environment", done: summary.final_signoff_boolean },
+    { label: "Recommendation", done: !!summary.recommendation },
+    { label: "Approval", done: summary.status === "Approved" || summary.status === "Rejected" },
+  ];
+  document.getElementById("progress-steps").innerHTML = steps.map((s) =>
+    `<div class="progress-step ${s.done ? "done" : ""}">${s.label}</div>`).join("");
+}
+
+function renderScope(scope) {
+  const div = document.getElementById("scope-content");
+  if (!scope) { div.innerHTML = '<p class="notice">No scope on record.</p>'; return; }
+  div.innerHTML = `
+    <p><strong>Project description:</strong> ${scope.project_description} ${APP.provenanceBadge("REQUESTER_FACT")}</p>
+    <p><strong>Systems in scope:</strong> ${scope.systems_in_scope} ${APP.provenanceBadge("REQUESTER_FACT")}</p>
+    <p><strong>Business justification:</strong> ${scope.business_justification} ${APP.provenanceBadge("REQUESTER_FACT")}</p>
+    <p class="notice">Version ${scope.version}, submitted ${new Date(scope.submitted_at).toLocaleString()}</p>`;
+}
+
+async function generateQuestionnaire() {
+  APP.clearError("questionnaire-error");
+  try {
+    const result = await APP.api(`/api/poc-requests/${pocId}/questionnaire/generate`, { method: "POST" });
+    renderAiAnalysis(result.identified_gaps, result.identified_assumptions, result.dropped_candidate_count);
+    await loadAll();
+  } catch (e) { APP.showError("questionnaire-error", e); }
+}
+
+function renderAiAnalysis(gaps, assumptions, droppedCount) {
+  document.getElementById("ai-gaps").innerHTML = gaps && gaps.length
+    ? `<h3>Identified gaps ${APP.provenanceBadge("MISSING_EVIDENCE")}</h3><ul>${gaps.map((g) => `<li>${g}</li>`).join("")}</ul>`
+    : "";
+  document.getElementById("ai-assumptions").innerHTML =
+    (assumptions && assumptions.length
+      ? `<h3>Identified assumptions ${APP.provenanceBadge("AI_ASSUMPTION")}</h3><ul>${assumptions.map((a) => `<li>${a}</li>`).join("")}</ul>`
+      : "") +
+    (droppedCount ? `<p class="notice">${droppedCount} conditional question(s) dropped for the 15-question cap (not discarded -- recorded as dropped_for_cap).</p>` : "");
+}
+
+let currentQuestions = [];
+function renderQuestions(questions, answers) {
+  currentQuestions = questions;
+  const answersByQuestion = {};
+  answers.forEach((a) => (answersByQuestion[a.question_id] = a));
+  const div = document.getElementById("questions");
+  div.innerHTML = questions.map((q) => {
+    const a = answersByQuestion[q.id];
+    return `
+      <div style="border-top:1px solid #eee; padding:0.5rem 0;">
+        <div><strong>${q.question_text}</strong>
+          <span class="pill neutral">${q.domain_label}</span>
+          ${q.is_mandatory_domain ? '<span class="pill confirmed">Mandatory</span>' : '<span class="pill pending">Conditional</span>'}
+        </div>
+        ${a
+          ? `<p>${a.answer_text} ${APP.provenanceBadge(a.provenance_tag)} ${APP.pill(a.usability)}</p>`
+          : (ROLE === "Requester"
+              ? `<textarea data-question-id="${q.id}" rows="2" placeholder="Your answer"></textarea>`
+              : '<p class="notice">Not yet answered.</p>')}
+      </div>`;
+  }).join("") || '<p class="notice">No questions generated yet.</p>';
+  if (ROLE === "Requester" && questions.length > 0 && answers.length === 0) {
+    document.getElementById("submit-answers-btn").classList.remove("hidden");
+  }
+}
+
+async function submitAnswers() {
+  APP.clearError("answers-error");
+  const textareas = document.querySelectorAll("#questions textarea");
+  const answers = Array.from(textareas).map((t) => ({ question_id: t.dataset.questionId, answer_text: t.value }));
+  try {
+    await APP.api(`/api/poc-requests/${pocId}/answers`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }),
+    });
+    APP.showSuccess("answers-success", "Answers submitted.");
+    await loadAll();
+  } catch (e) { APP.showError("answers-error", e); }
+}
+
+async function generateMappings() {
+  APP.clearError("mapping-error");
+  try {
+    await APP.api(`/api/poc-requests/${pocId}/mappings/generate`, { method: "POST" });
+    await loadAll();
+  } catch (e) { APP.showError("mapping-error", e); }
+}
+
+function renderMappings(mappings) {
+  const body = document.getElementById("mapping-body");
+  const canReview = ROLE === "SecurityReviewer";
+  body.innerHTML = mappings.map((m) => `
+    <tr>
+      <td>${m.control_id}</td>
+      <td>${m.confidence}</td>
+      <td>${APP.provenanceBadge(m.provenance_tag)}</td>
+      <td>${APP.pill(m.review_status)}</td>
+      <td>${m.rationale}</td>
+      <td>${canReview ? `
+        <button onclick="reviewMapping('${m.id}','Confirm')">Confirm</button>
+        <button class="secondary" onclick="reviewMapping('${m.id}','Reject')">Reject</button>` : ""}
+      </td>
+    </tr>`).join("") || `<tr><td colspan="6" class="notice">No mappings yet.</td></tr>`;
+}
+
+async function reviewMapping(id, action) {
+  APP.clearError("mapping-error");
+  try {
+    const body = { action };
+    if (action === "Reject") body.reject_reason = prompt("Reject reason (required):") || "";
+    await APP.api(`/api/poc-requests/${pocId}/mappings/${id}/review`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    await loadAll();
+  } catch (e) { APP.showError("mapping-error", e); }
+}
+
+async function uploadEvidence() {
+  APP.clearError("evidence-error");
+  try {
+    const fd = new FormData();
+    fd.append("file", document.getElementById("ev-file").files[0]);
+    fd.append("control_id", document.getElementById("ev-control-id").value);
+    await APP.api(`/api/poc-requests/${pocId}/evidence`, { method: "POST", body: fd });
+    await loadAll();
+  } catch (e) { APP.showError("evidence-error", e); }
+}
+
+function renderEvidence(states) {
+  const body = document.getElementById("evidence-body");
+  const canValidate = ROLE === "SecurityReviewer";
+  body.innerHTML = states.map((s) => `
+    <tr>
+      <td>${s.control_id}</td>
+      <td>${APP.pill(s.state)}</td>
+      <td>${s.validated_by ? s.validated_by.slice(0, 8) : "-"}</td>
+      <td>${canValidate ? `
+        <button onclick="validateEvidence('${s.control_id}','Verified - Human Validated')">Verify</button>
+        <button class="secondary" onclick="validateEvidence('${s.control_id}','Rejected - Insufficient Evidence')">Reject</button>` : ""}
+      </td>
+    </tr>`).join("") || `<tr><td colspan="4" class="notice">No evidence uploaded yet.</td></tr>`;
+}
+
+async function validateEvidence(controlId, newState) {
+  APP.clearError("evidence-error");
+  const rationale = prompt("Rationale (required):") || "";
+  try {
+    await APP.api(`/api/poc-requests/${pocId}/controls/${controlId}/evidence/validate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_state: newState, rationale }),
+    });
+    await loadAll();
+  } catch (e) { APP.showError("evidence-error", e); }
+}
+
+function renderEnvironment(attestations, finalSignoff) {
+  const byDim = {};
+  attestations.forEach((a) => (byDim[a.dimension] = a));
+  const canAttest = ROLE === "EnvironmentOwner";
+  const canDispose = ROLE === "SecurityReviewer" || ROLE === "FinalApprover";
+  const div = document.getElementById("env-dimensions");
+  div.innerHTML = DIMENSIONS.map((d) => {
+    const a = byDim[d];
+    return `<div style="margin-bottom:0.5rem; border-top:1px solid #eee; padding-top:0.4rem;">
+      <strong>${d}</strong> ${APP.pill(a ? a.status : "Not Started")}
+      ${canAttest ? `
+        <button onclick="attest('${d}','Attested')">Attest</button>
+        <button class="secondary" onclick="attest('${d}','Attested-with-Exception')">Attest w/ Exception</button>
+        <button class="secondary" onclick="revoke('${d}')">Revoke</button>` : ""}
+      ${canDispose && a && a.status === "Attested-with-Exception" ? `<button onclick="disposeException('${d}')">Dispose exception</button>` : ""}
+    </div>`;
+  }).join("");
+  const el = document.getElementById("signoff-status");
+  el.innerHTML = `Final sign-off: ${APP.pill(finalSignoff ? "Complete" : "Incomplete", finalSignoff ? "ok" : "notstarted")}`;
+}
+
+async function attest(dim, status) {
+  APP.clearError("environment-error");
+  try {
+    await APP.api(`/api/poc-requests/${pocId}/environment-readiness/${dim}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, attestation_text: "attested via UI", supporting_evidence_ids: [] }),
+    });
+    await loadAll();
+  } catch (e) { APP.showError("environment-error", e); }
+}
+async function revoke(dim) {
+  APP.clearError("environment-error");
+  try {
+    await APP.api(`/api/poc-requests/${pocId}/environment-readiness/${dim}/revoke`, { method: "POST" });
+    await loadAll();
+  } catch (e) { APP.showError("environment-error", e); }
+}
+async function disposeException(dim) {
+  APP.clearError("environment-error");
+  const disposition = prompt("Disposition (Accepted/Rejected/Deferred):", "Deferred") || "Deferred";
+  try {
+    await APP.api(`/api/poc-requests/${pocId}/environment-readiness/${dim}/exception`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        issue_description: prompt("Issue description:") || "",
+        risk_assessment: prompt("Risk assessment:") || "",
+        compensating_controls: [],
+        disposition,
+        disposition_rationale: prompt("Disposition rationale (required):") || "",
+        remediation_owner: disposition === "Accepted" ? APP.getUserId() : null,
+        remediation_deadline: disposition === "Accepted" ? new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10) : null,
+        expiry_date: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+      }),
+    });
+    await loadAll();
+  } catch (e) { APP.showError("environment-error", e); }
+}
+
+async function recompute() {
+  APP.clearError("engine-error");
+  try {
+    const rec = await APP.api(`/api/poc-requests/${pocId}/recommendation/recompute`, { method: "POST" });
+    renderRecommendation(rec);
+  } catch (e) {
+    APP.showError("engine-error", e);
+    if (e.status === 503) {
+      document.getElementById("recommendation").innerHTML =
+        `<p class="notice">Engine refused -- configuration missing: ${JSON.stringify((e.body && e.body.detail) || {})}</p>`;
+    }
+  }
+}
+function renderRecommendation(rec) {
+  document.getElementById("recommendation").innerHTML = `
+    ${APP.pill(rec.outcome, APP.outcomePillClass(rec.outcome))} ${rec.risk_tier ? APP.pill(rec.risk_tier, "neutral") : ""}
+    <p>${rec.rationale}</p>
+    <p class="notice">input_version ${rec.input_version}, decision layer ${rec.decision_layer_attribution}</p>`;
+}
+
+async function decide() {
+  APP.clearError("approval-error");
+  try {
+    const result = await APP.api(`/api/poc-requests/${pocId}/approval-request/decisions`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision: document.getElementById("decision-type").value,
+        rationale: document.getElementById("decision-rationale").value,
+        disagreement_rationale: document.getElementById("disagreement-rationale").value || null,
+      }),
+    });
+    document.getElementById("approval-result").innerHTML = `<p class="success-box">Committed: ${result.decision}</p>`;
+    await loadAll();
+  } catch (e) {
+    APP.showError("approval-error", e);
+    if (e.status === 409 && e.body && e.body.detail) {
+      document.getElementById("approval-result").innerHTML =
+        `<p class="notice">Rejected by precondition: ${JSON.stringify(e.body.detail.failed_preconditions)}</p>`;
+      if (e.body.detail.fresh_recommendation) renderRecommendation(e.body.detail.fresh_recommendation);
+    }
+  }
+}
+
+if (pocId) loadAll();
+</script>
+</body>
+</html>
