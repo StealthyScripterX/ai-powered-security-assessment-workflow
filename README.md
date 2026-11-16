@@ -174,5 +174,4 @@ docs/baseline/       — the original requirements/governance baseline
 
 ## 📜 License
 
-No license file yet — treat as "all rights reserved" until one is
-added. Open an issue if you want to use this and need that clarified.
+MIT — see [`LICENSE`](LICENSE). Use it, fork it, learn from it.
